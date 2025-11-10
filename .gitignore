@@ -1,0 +1,5 @@
+.env
+/venv/
+/_pycache/
+prompt_jupyter.md
+prompt_streamlit.md

@@ -6,7 +6,8 @@ from sentence_transformers import SentenceTransformer
 import os
 from dotenv import load_dotenv
 import fitz  # PyMuPDF
-from google.cloud import vision
+import base64
+import requests
 import hashlib
 from supabase import create_client, Client
 
@@ -17,7 +18,7 @@ from supabase import create_client, Client
 # sentence-transformers
 # numpy
 # PyMuPDF
-# google-cloud-vision
+# requests
 # supabase
 # ------------------------
 
@@ -27,14 +28,12 @@ load_dotenv()
 # 学習用のサンプルテキストを外部ファイルからインポート
 from sample_texts import sample_text_A, sample_text_B, DISPLAY_NAME_A, DISPLAY_NAME_B
 
-# Google Cloud Vision APIクライアントの初期化（オプション）
-vision_client = None
-google_credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-if google_credentials_path and os.path.exists(google_credentials_path):
-    try:
-        vision_client = vision.ImageAnnotatorClient()
-    except Exception as e:
-        st.sidebar.warning(f"Google Cloud Vision APIの初期化に失敗しました: {e}")
+# Google Cloud Vision APIキーの初期化（オプション）
+google_vision_api_key = os.getenv("GOOGLE_VISION_API_KEY")
+if google_vision_api_key:
+    st.sidebar.success("Google Cloud Vision APIキーが設定されました。")
+else:
+    st.sidebar.warning("OCR機能を使用するには、`.env`ファイルに`GOOGLE_VISION_API_KEY`を設定してください。")
 
 # Supabaseクライアントの初期化（オプション）
 supabase_client = None
@@ -47,6 +46,62 @@ if supabase_url and supabase_key:
         st.sidebar.warning(f"Supabaseクライアントの初期化に失敗しました: {e}")
 else:
     st.sidebar.warning("Supabaseを使用するには、`.env`ファイルに`SUPABASE_URL`と`SUPABASE_KEY`を設定してください。")
+
+# APIキーを使用してGoogle Cloud Vision APIのOCRを実行する関数
+def ocr_with_api_key(image_bytes, api_key):
+    """
+    APIキーを使用してGoogle Cloud Vision APIのOCRを実行
+    
+    Args:
+        image_bytes: 画像のバイトデータ
+        api_key: Google Cloud Vision APIキー
+    
+    Returns:
+        OCR結果のテキスト（エラー時はNone）
+    """
+    try:
+        # 画像をbase64エンコード
+        image_content = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # APIエンドポイント
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        
+        # リクエストボディ
+        request_body = {
+            "requests": [{
+                "image": {
+                    "content": image_content
+                },
+                "features": [{
+                    "type": "DOCUMENT_TEXT_DETECTION"
+                }]
+            }]
+        }
+        
+        # API呼び出し
+        response = requests.post(url, json=request_body)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        # レスポンスからテキストを抽出
+        if 'responses' in result and len(result['responses']) > 0:
+            response_data = result['responses'][0]
+            
+            # エラーチェック
+            if 'error' in response_data:
+                error_msg = response_data['error'].get('message', 'Unknown error')
+                raise Exception(f"Vision APIエラー: {error_msg}")
+            
+            if 'fullTextAnnotation' in response_data:
+                return response_data['fullTextAnnotation'].get('text', '')
+        
+        return ''
+        
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"APIリクエストエラー: {e}")
+    except Exception as e:
+        raise Exception(f"OCR処理エラー: {e}")
 
 # PDFからテキストを抽出する関数（OCR対応、キャッシュ機能付き）
 def extract_text_from_pdf(pdf_file):
@@ -100,8 +155,8 @@ def extract_text_from_pdf(pdf_file):
         st.warning(f"PyMuPDFでのテキスト抽出エラー: {e}。OCR処理に移行します。")
 
     # 2. OCR処理 (テキスト抽出失敗時またはテキストが少ない場合)
-    if vision_client is None:
-        st.error("OCR機能を使用するには、`.env`ファイルに`GOOGLE_APPLICATION_CREDENTIALS`を設定してください。")
+    if not google_vision_api_key:
+        st.error("OCR機能を使用するには、`.env`ファイルに`GOOGLE_VISION_API_KEY`を設定してください。")
         return None
     
     full_text_ocr = ""
@@ -119,13 +174,10 @@ def extract_text_from_pdf(pdf_file):
             pix = page.get_pixmap(dpi=300)
             img_bytes = pix.tobytes("png")
             
-            image = vision.Image(content=img_bytes)
-            
-            # Vision APIでOCR実行
-            response = vision_client.document_text_detection(image=image)
-            
-            if response.full_text_annotation:
-                full_text_ocr += response.full_text_annotation.text + "\n\n"
+            # APIキーを使用してOCR実行
+            page_text = ocr_with_api_key(img_bytes, google_vision_api_key)
+            if page_text:
+                full_text_ocr += page_text + "\n\n"
             
             # プログレスバーを更新
             progress = (page_num + 1) / total_pages
@@ -135,9 +187,6 @@ def extract_text_from_pdf(pdf_file):
         doc.close()
         progress_bar.empty()
         status_text.empty()
-        
-        if hasattr(response, 'error') and response.error.message:
-            raise Exception(f"Vision APIエラー: {response.error.message}")
         
         # キャッシュに保存
         st.session_state.pdf_cache[cache_key] = full_text_ocr

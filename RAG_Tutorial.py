@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import fitz  # PyMuPDF
 from google.cloud import vision
 import hashlib
+from supabase import create_client, Client
 
 # --- requirements.txt ---
 # streamlit
@@ -17,6 +18,7 @@ import hashlib
 # numpy
 # PyMuPDF
 # google-cloud-vision
+# supabase
 # ------------------------
 
 # .envファイルから環境変数を読み込む
@@ -33,6 +35,18 @@ if google_credentials_path and os.path.exists(google_credentials_path):
         vision_client = vision.ImageAnnotatorClient()
     except Exception as e:
         st.sidebar.warning(f"Google Cloud Vision APIの初期化に失敗しました: {e}")
+
+# Supabaseクライアントの初期化（オプション）
+supabase_client = None
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+if supabase_url and supabase_key:
+    try:
+        supabase_client = create_client(supabase_url, supabase_key)
+    except Exception as e:
+        st.sidebar.warning(f"Supabaseクライアントの初期化に失敗しました: {e}")
+else:
+    st.sidebar.warning("Supabaseを使用するには、`.env`ファイルに`SUPABASE_URL`と`SUPABASE_KEY`を設定してください。")
 
 # PDFからテキストを抽出する関数（OCR対応、キャッシュ機能付き）
 def extract_text_from_pdf(pdf_file):
@@ -132,6 +146,57 @@ def extract_text_from_pdf(pdf_file):
             doc.close()
         return None
 
+# チャンクをベクトル化してSupabaseに登録する関数
+def process_and_upload_to_supabase(chunks, file_metadata=None):
+    """
+    分割実行で生成されたチャンクをベクトル化し、Supabaseに登録する。
+    
+    Args:
+        chunks: 登録するチャンクのリスト
+        file_metadata: ファイルのメタデータ（辞書形式）
+    """
+    if supabase_client is None:
+        st.error("Supabaseクライアントが初期化されていません。`.env`ファイルに`SUPABASE_URL`と`SUPABASE_KEY`を設定してください。")
+        return False
+    
+    if not chunks or len(chunks) == 0:
+        st.error("チャンクが空です。先に「分割実行」ボタンを押してチャンクを生成してください。")
+        return False
+    
+    try:
+        # 1. ベクトル化（Embedding）
+        with st.spinner("チャンクをベクトル化中..."):
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            embeddings = model.encode(chunks)
+            st.info(f"ベクトル化完了。チャンク数: {len(chunks)}, ベクトル形状: {embeddings.shape}")
+        
+        # 2. Supabaseに登録
+        with st.spinner("Supabaseへのデータ登録中..."):
+            data_to_upload = []
+            default_metadata = file_metadata if file_metadata else {"source_file": "unknown"}
+            
+            for i, chunk in enumerate(chunks):
+                data_to_upload.append({
+                    "content": chunk,
+                    "embedding": embeddings[i].tolist(),  # ベクトルをリスト形式に変換
+                    "metadata": default_metadata
+                })
+            
+            # upsertでデータを挿入（バッチ処理）
+            response = supabase_client.table("documents").upsert(data_to_upload).execute()
+            
+            # レスポンスの確認
+            if hasattr(response, 'data') and response.data:
+                st.success(f"Supabaseへの登録が完了しました。（{len(response.data)}件）")
+                return True
+            else:
+                st.error("Supabaseへの登録に失敗しました。レスポンスにデータが含まれていません。")
+                return False
+                
+    except Exception as e:
+        st.error(f"Supabaseへの登録中にエラーが発生しました: {e}")
+        return False
+
 # --- App Title and Description ---
 st.set_page_config(page_title="RAGステップ・バイ・ステップ学習", layout="wide")
 st.title("触って学ぶ！RAG（Retrieval-Augmented Generation）の仕組み")
@@ -163,6 +228,8 @@ text_source_option = st.radio(
 
 source_text = None
 text_source_type = None
+uploaded_file = None
+selected_sample = None
 
 if text_source_option == "PDFファイル":
     # PDFアップロード機能
@@ -180,6 +247,9 @@ if text_source_option == "PDFファイル":
         file_name = uploaded_file.name if hasattr(uploaded_file, 'name') else 'unknown'
         cache_key = f"{file_name}_{file_hash}"
         
+        # ファイル情報をsession_stateに保存
+        st.session_state.current_file_name = file_name
+        
         # キャッシュの初期化
         if 'pdf_cache' not in st.session_state:
             st.session_state.pdf_cache = {}
@@ -188,6 +258,7 @@ if text_source_option == "PDFファイル":
         if cache_key in st.session_state.pdf_cache:
             source_text = st.session_state.pdf_cache[cache_key]
             text_source_type = "PDF"
+            st.session_state.text_source_type = "PDF"
             st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
         else:
             # PDFからテキストを抽出
@@ -196,12 +267,16 @@ if text_source_option == "PDFファイル":
                 if extracted_text:
                     source_text = extracted_text
                     text_source_type = "PDF"
+                    st.session_state.text_source_type = "PDF"
                     st.success(f"PDFファイル「{file_name}」からテキストを抽出しました。")
                 else:
                     st.error("PDFからテキストを抽出できませんでした。")
                     source_text = None
     else:
         st.info("PDFファイルをアップロードしてください。")
+        # session_stateからクリア
+        if 'current_file_name' in st.session_state:
+            del st.session_state.current_file_name
 else:
     # サンプルテキストを選択
     sample_texts = {
@@ -215,6 +290,9 @@ else:
     )
     source_text = sample_texts[selected_sample]
     text_source_type = "サンプルテキスト"
+    st.session_state.text_source_type = "サンプルテキスト"
+    # 選択したサンプルをsession_stateに保存
+    st.session_state.current_sample_name = selected_sample
 
 if source_text:
     with st.expander(f"選択した原文を表示（{text_source_type}）"):
@@ -235,8 +313,11 @@ if st.button("分割実行", key="chunking_button"):
     if source_text is None:
         st.error("テキストが選択されていません。サンプルテキストを選択するか、PDFファイルをアップロードしてください。")
     else:
+        # 分割方法をsession_stateに保存
+        st.session_state.split_method = split_method
         if split_method == "固定文字数":
             chunks = [source_text[i:i+chunk_size] for i in range(0, len(source_text), chunk_size)]
+            st.session_state.chunk_size = chunk_size
         elif split_method == "改行（\\n）":
             chunks = [p for p in source_text.split('\n') if p.strip()]
         elif split_method == "句読点（。）":
@@ -256,6 +337,41 @@ if st.session_state.chunks:
         with st.container(border=True):
             st.write(f"**チャンク {i+1}**")
             st.text(chunk)
+    
+    # Supabaseへの登録機能
+    if supabase_client:
+        st.write("---")
+        st.subheader("Supabaseへの登録")
+        st.write("「分割実行」で生成されたチャンクをベクトル化してSupabaseに登録できます。")
+        
+        # メタデータを準備
+        current_text_source_type = st.session_state.get('text_source_type', 'unknown')
+        current_split_method = st.session_state.get('split_method', 'unknown')
+        if current_text_source_type == "PDF":
+            # PDFファイルの場合
+            file_name = st.session_state.get('current_file_name', 'unknown')
+            metadata = {
+                "source_file": file_name,
+                "type": "pdf",
+                "chunking_method": current_split_method
+            }
+            # 固定文字数の場合はチャンクサイズも保存
+            if current_split_method == "固定文字数":
+                metadata["chunk_size"] = st.session_state.get('chunk_size', 150)
+        else:
+            # サンプルテキストの場合
+            sample_name = st.session_state.get('current_sample_name', 'sample_text')
+            metadata = {
+                "source_file": sample_name,
+                "type": "sample_text",
+                "chunking_method": current_split_method
+            }
+            # 固定文字数の場合はチャンクサイズも保存
+            if current_split_method == "固定文字数":
+                metadata["chunk_size"] = st.session_state.get('chunk_size', 150)
+        
+        if st.button("Supabaseに登録", key="upload_to_supabase"):
+            process_and_upload_to_supabase(st.session_state.chunks, file_metadata=metadata)
 
 # --- Step B: Retrieval ---
 st.header("ステップB: 検索（Retrieval）")

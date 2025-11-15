@@ -6,6 +6,8 @@ from sentence_transformers import SentenceTransformer
 import os
 from dotenv import load_dotenv
 import fitz  # PyMuPDF
+from google.cloud import vision
+import hashlib
 
 # --- requirements.txt ---
 # streamlit
@@ -14,6 +16,7 @@ import fitz  # PyMuPDF
 # sentence-transformers
 # numpy
 # PyMuPDF
+# google-cloud-vision
 # ------------------------
 
 # .envファイルから環境変数を読み込む
@@ -22,21 +25,111 @@ load_dotenv()
 # 学習用のサンプルテキストを外部ファイルからインポート
 from sample_texts import sample_text_A, sample_text_B, DISPLAY_NAME_A, DISPLAY_NAME_B
 
-# PDFからテキストを抽出する関数
+# Google Cloud Vision APIクライアントの初期化（オプション）
+vision_client = None
+google_credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+if google_credentials_path and os.path.exists(google_credentials_path):
+    try:
+        vision_client = vision.ImageAnnotatorClient()
+    except Exception as e:
+        st.sidebar.warning(f"Google Cloud Vision APIの初期化に失敗しました: {e}")
+
+# PDFからテキストを抽出する関数（OCR対応、キャッシュ機能付き）
 def extract_text_from_pdf(pdf_file):
     """
-    PDFファイルからテキストを抽出する（PyMuPDFを使用）
+    PDFファイルからテキストを抽出する。
+    テキストが抽出できない（少ない）場合は、OCR（Google Cloud Vision）を試みる。
+    同じPDFファイルの場合は、キャッシュから結果を返す。
     """
+    # PDFファイルのハッシュを計算（キャッシュキーとして使用）
+    pdf_bytes = pdf_file.read()
+    pdf_file.seek(0)  # ファイルポインタをリセット
+    
+    # ファイル名と内容のハッシュを組み合わせてキーを生成
+    file_hash = hashlib.md5(pdf_bytes).hexdigest()
+    file_name = pdf_file.name if hasattr(pdf_file, 'name') else 'unknown'
+    cache_key = f"{file_name}_{file_hash}"
+    
+    # キャッシュの初期化
+    if 'pdf_cache' not in st.session_state:
+        st.session_state.pdf_cache = {}
+    
+    # キャッシュに結果がある場合はそれを返す
+    if cache_key in st.session_state.pdf_cache:
+        st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
+        return st.session_state.pdf_cache[cache_key]
+    
+    # 1. PyMuPDFでテキスト抽出を試みる
     try:
-        doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         full_text = ""
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             full_text += page.get_text("text")
+        
         doc.close()
-        return full_text
+        
+        # テキストが十分に抽出できたか簡易判定 (例: 1ページあたり平均10文字以上)
+        if len(full_text) > 10 * len(doc):
+            # キャッシュに保存
+            st.session_state.pdf_cache[cache_key] = full_text
+            return full_text
+        
+        # テキストが少ない場合はOCR処理に移行
+        st.info("PyMuPDFでは十分なテキストが抽出できませんでした。OCR処理を実行します...")
+        
     except Exception as e:
-        st.error(f"PDFのテキスト抽出中にエラーが発生しました: {e}")
+        st.warning(f"PyMuPDFでのテキスト抽出エラー: {e}。OCR処理に移行します。")
+
+    # 2. OCR処理 (テキスト抽出失敗時またはテキストが少ない場合)
+    if vision_client is None:
+        st.error("OCR機能を使用するには、`.env`ファイルに`GOOGLE_APPLICATION_CREDENTIALS`を設定してください。")
+        return None
+    
+    full_text_ocr = ""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        total_pages = len(doc)
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for page_num in range(total_pages):
+            page = doc.load_page(page_num)
+            
+            # ページを画像(PNG)に変換
+            pix = page.get_pixmap(dpi=300)
+            img_bytes = pix.tobytes("png")
+            
+            image = vision.Image(content=img_bytes)
+            
+            # Vision APIでOCR実行
+            response = vision_client.document_text_detection(image=image)
+            
+            if response.full_text_annotation:
+                full_text_ocr += response.full_text_annotation.text + "\n\n"
+            
+            # プログレスバーを更新
+            progress = (page_num + 1) / total_pages
+            progress_bar.progress(progress)
+            status_text.text(f"OCR処理中: ページ {page_num + 1}/{total_pages}")
+        
+        doc.close()
+        progress_bar.empty()
+        status_text.empty()
+        
+        if hasattr(response, 'error') and response.error.message:
+            raise Exception(f"Vision APIエラー: {response.error.message}")
+        
+        # キャッシュに保存
+        st.session_state.pdf_cache[cache_key] = full_text_ocr
+        st.success("Google Cloud VisionによるOCR処理に成功しました。")
+        return full_text_ocr
+
+    except Exception as e:
+        st.error(f"OCR処理中にエラーが発生しました: {e}")
+        if 'doc' in locals():
+            doc.close()
         return None
 
 # --- App Title and Description ---
@@ -80,15 +173,33 @@ if text_source_option == "PDFファイル":
     )
     
     if uploaded_file is not None:
-        # PDFからテキストを抽出
-        with st.spinner("PDFからテキストを抽出中..."):
-            extracted_text = extract_text_from_pdf(uploaded_file)
-            if extracted_text:
-                source_text = extracted_text
-                text_source_type = "PDF"
-                st.success(f"PDFファイル「{uploaded_file.name}」からテキストを抽出しました。")
-            else:
-                st.error("PDFからテキストを抽出できませんでした。")
+        # PDFファイルのハッシュを計算してキャッシュをチェック
+        pdf_bytes = uploaded_file.read()
+        uploaded_file.seek(0)  # ファイルポインタをリセット
+        file_hash = hashlib.md5(pdf_bytes).hexdigest()
+        file_name = uploaded_file.name if hasattr(uploaded_file, 'name') else 'unknown'
+        cache_key = f"{file_name}_{file_hash}"
+        
+        # キャッシュの初期化
+        if 'pdf_cache' not in st.session_state:
+            st.session_state.pdf_cache = {}
+        
+        # キャッシュに結果がある場合はそれを使用、ない場合は抽出を実行
+        if cache_key in st.session_state.pdf_cache:
+            source_text = st.session_state.pdf_cache[cache_key]
+            text_source_type = "PDF"
+            st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
+        else:
+            # PDFからテキストを抽出
+            with st.spinner("PDFからテキストを抽出中..."):
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                if extracted_text:
+                    source_text = extracted_text
+                    text_source_type = "PDF"
+                    st.success(f"PDFファイル「{file_name}」からテキストを抽出しました。")
+                else:
+                    st.error("PDFからテキストを抽出できませんでした。")
+                    source_text = None
     else:
         st.info("PDFファイルをアップロードしてください。")
 else:

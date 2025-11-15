@@ -373,6 +373,46 @@ if st.session_state.chunks:
         if st.button("Supabaseに登録", key="upload_to_supabase"):
             process_and_upload_to_supabase(st.session_state.chunks, file_metadata=metadata)
 
+# Supabaseでベクトル検索を実行する関数
+def search_documents_supabase(query_text, threshold=0.5, count=5):
+    """
+    テキストクエリをベクトル化し、Supabaseでベクトル検索を実行する
+    
+    Args:
+        query_text: 検索クエリのテキスト
+        threshold: 類似度の閾値（デフォルト: 0.5）
+        count: 返す検索結果の数（デフォルト: 5）
+    
+    Returns:
+        検索結果のリスト（chunk, scoreのタプルのリスト）
+    """
+    if supabase_client is None:
+        st.error("Supabaseクライアントが初期化されていません。`.env`ファイルに`SUPABASE_URL`と`SUPABASE_KEY`を設定してください。")
+        return None
+    
+    try:
+        # 1. 質問をベクトル化
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        query_embedding = model.encode([query_text])[0].tolist()
+        
+        # 2. SupabaseのRPC (Remote Procedure Call) でSQL関数を呼び出す
+        response = supabase_client.rpc('match_documents', {
+            'query_embedding': query_embedding,
+            'match_threshold': threshold,
+            'match_count': count
+        }).execute()
+        
+        if response.data:
+            # (chunk, score)のタプルのリストに変換
+            scored_chunks = [(doc['content'], doc['similarity']) for doc in response.data]
+            return scored_chunks
+        else:
+            return []
+            
+    except Exception as e:
+        st.error(f"Supabaseでの検索エラー: {e}")
+        return None
+
 # --- Step B: Retrieval ---
 st.header("ステップB: 検索（Retrieval）")
 st.write("次に、ユーザーの質問と意味が近いチャンクを、大量のチャンクの中から探し出します。この「検索」がRAGの核となる部分です。")
@@ -380,7 +420,21 @@ st.write("次に、ユーザーの質問と意味が近いチャンクを、大�
 if st.session_state.chunks:
     question = st.text_input("3. サンプルテキストに関する質問を入力してください:", placeholder="例：主人公の名前は？")
 
-    if st.button("検索実行", key="retrieval_button") and question:
+    # 検索ボタンを2つ配置
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # ローカル検索（既存機能）
+        local_search_clicked = st.button("検索実行（ローカル）", key="retrieval_button_local", use_container_width=True)
+        
+    with col2:
+        # Supabase検索（新機能）
+        supabase_search_clicked = st.button("検索実行（Supabase）", key="retrieval_button_supabase", use_container_width=True, disabled=supabase_client is None)
+        if supabase_client is None:
+            st.caption("⚠️ Supabaseが設定されていません")
+
+    # ローカル検索の実行
+    if local_search_clicked and question:
         with st.spinner("Embeddingモデルを読み込み、ベクトル化と類似度計算を実行中です..."):
             try:
                 # 1. Load model
@@ -400,14 +454,65 @@ if st.session_state.chunks:
                 
                 st.session_state.scored_chunks = scored_chunks
                 st.session_state.question = question
-
+                st.session_state.search_method = "local"
 
             except Exception as e:
                 st.error(f"検索実行中にエラーが発生しました: {e}")
 
-    if 'scored_chunks' in st.session_state:
-        st.subheader("4. 検索結果（関連度スコア順）")
-        st.write("質問と各チャンクの意味的な近さを「関連度スコア」として計算し、スコアの高い順に並べ替えました。")
+    # Supabase検索の実行
+    if supabase_search_clicked and question:
+        with st.spinner("Supabaseでベクトル検索を実行中です..."):
+            try:
+                # 検索パラメータの設定
+                threshold = st.session_state.get('supabase_search_threshold', 0.5)
+                count = st.session_state.get('supabase_search_count', 5)
+                
+                scored_chunks = search_documents_supabase(question, threshold=threshold, count=count)
+                
+                if scored_chunks is not None:
+                    st.session_state.scored_chunks = scored_chunks
+                    st.session_state.question = question
+                    st.session_state.search_method = "supabase"
+                    
+                    if len(scored_chunks) == 0:
+                        st.warning(f"類似度 {threshold} 以上で関連するチャンクは見つかりませんでした。")
+                    else:
+                        st.info(f"類似度 {threshold} 以上で {len(scored_chunks)} 件の関連チャンクが見つかりました。")
+
+            except Exception as e:
+                st.error(f"Supabase検索実行中にエラーが発生しました: {e}")
+
+    # Supabase検索のパラメータ設定
+    if supabase_client:
+        st.write("---")
+        with st.expander("Supabase検索の設定", expanded=False):
+            st.caption("Supabaseに登録されたデータから検索します。先にSupabaseにデータを登録してください。")
+            threshold = st.slider(
+                "類似度の閾値:",
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.get('supabase_search_threshold', 0.5),
+                step=0.05,
+                help="この値以上の類似度を持つチャンクのみが検索結果に含まれます。"
+            )
+            st.session_state.supabase_search_threshold = threshold
+            
+            count = st.slider(
+                "検索結果の最大件数:",
+                min_value=1,
+                max_value=20,
+                value=st.session_state.get('supabase_search_count', 5),
+                step=1
+            )
+            st.session_state.supabase_search_count = count
+
+    # 検索結果の表示
+    if 'scored_chunks' in st.session_state and 'question' in st.session_state:
+        search_method = st.session_state.get('search_method', 'local')
+        method_name = "ローカル" if search_method == "local" else "Supabase"
+        
+        st.subheader(f"4. 検索結果（{method_name}検索、関連度スコア順）")
+        st.write(f"質問と各チャンクの意味的な近さを「関連度スコア」として計算し、スコアの高い順に並べ替えました。（検索方法: {method_name}）")
         for i, (chunk, score) in enumerate(st.session_state.scored_chunks):
             with st.container(border=True):
                 col1, col2 = st.columns([4, 1])

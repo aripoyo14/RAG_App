@@ -70,7 +70,7 @@ def extract_text_from_pdf(pdf_file):
     
     # キャッシュに結果がある場合はそれを返す
     if cache_key in st.session_state.pdf_cache:
-        st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
+        # st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
         return st.session_state.pdf_cache[cache_key]
     
     # 1. PyMuPDFでテキスト抽出を試みる
@@ -83,14 +83,18 @@ def extract_text_from_pdf(pdf_file):
         
         doc.close()
         
-        # テキストが十分に抽出できたか簡易判定 (例: 1ページあたり平均10文字以上)
-        if len(full_text) > 10 * len(doc):
+        # テキストが実際に抽出できたか判定（空白や改行のみでないかチェック）
+        # 意味のある文字（空白・改行・タブ以外）が含まれているか確認
+        text_without_whitespace = ''.join(full_text.split())
+        if len(text_without_whitespace) > 0:
+            # テキスト情報が含まれている場合は、OCR処理をスキップしてテキストを返す
+            st.success("PDFからテキスト情報を取得しました。OCR処理はスキップします。")
             # キャッシュに保存
             st.session_state.pdf_cache[cache_key] = full_text
             return full_text
         
-        # テキストが少ない場合はOCR処理に移行
-        st.info("PyMuPDFでは十分なテキストが抽出できませんでした。OCR処理を実行します...")
+        # テキストが抽出できない（空白のみ）場合はOCR処理に移行
+        st.info("PDFにテキスト情報が含まれていません。OCR処理を実行します...")
         
     except Exception as e:
         st.warning(f"PyMuPDFでのテキスト抽出エラー: {e}。OCR処理に移行します。")
@@ -259,7 +263,7 @@ if text_source_option == "PDFファイル":
             source_text = st.session_state.pdf_cache[cache_key]
             text_source_type = "PDF"
             st.session_state.text_source_type = "PDF"
-            st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
+            # st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
         else:
             # PDFからテキストを抽出
             with st.spinner("PDFからテキストを抽出中..."):

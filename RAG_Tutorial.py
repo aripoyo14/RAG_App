@@ -1,15 +1,9 @@
-
 import streamlit as st
 import openai
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import os
 from dotenv import load_dotenv
-import fitz  # PyMuPDF
-import base64
-import requests
-import hashlib
-from supabase import create_client, Client
 
 # --- requirements.txt ---
 # streamlit
@@ -17,9 +11,6 @@ from supabase import create_client, Client
 # python-dotenv
 # sentence-transformers
 # numpy
-# PyMuPDF
-# requests
-# supabase
 # ------------------------
 
 # .envファイルから環境変数を読み込む
@@ -27,228 +18,6 @@ load_dotenv()
 
 # 学習用のサンプルテキストを外部ファイルからインポート
 from sample_texts import sample_text_A, sample_text_B, DISPLAY_NAME_A, DISPLAY_NAME_B
-
-# Google Cloud Vision APIキーの初期化（オプション）
-google_vision_api_key = os.getenv("GOOGLE_VISION_API_KEY")
-if google_vision_api_key:
-    st.sidebar.success("Google Cloud Vision APIキーが設定されました。")
-else:
-    st.sidebar.warning("OCR機能を使用するには、`.env`ファイルに`GOOGLE_VISION_API_KEY`を設定してください。")
-
-# Supabaseクライアントの初期化（オプション）
-supabase_client = None
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_KEY")
-if supabase_url and supabase_key:
-    try:
-        supabase_client = create_client(supabase_url, supabase_key)
-    except Exception as e:
-        st.sidebar.warning(f"Supabaseクライアントの初期化に失敗しました: {e}")
-else:
-    st.sidebar.warning("Supabaseを使用するには、`.env`ファイルに`SUPABASE_URL`と`SUPABASE_KEY`を設定してください。")
-
-# APIキーを使用してGoogle Cloud Vision APIのOCRを実行する関数
-def ocr_with_api_key(image_bytes, api_key):
-    """
-    APIキーを使用してGoogle Cloud Vision APIのOCRを実行
-    
-    Args:
-        image_bytes: 画像のバイトデータ
-        api_key: Google Cloud Vision APIキー
-    
-    Returns:
-        OCR結果のテキスト（エラー時はNone）
-    """
-    try:
-        # 画像をbase64エンコード
-        image_content = base64.b64encode(image_bytes).decode('utf-8')
-        
-        # APIエンドポイント
-        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
-        
-        # リクエストボディ
-        request_body = {
-            "requests": [{
-                "image": {
-                    "content": image_content
-                },
-                "features": [{
-                    "type": "DOCUMENT_TEXT_DETECTION"
-                }]
-            }]
-        }
-        
-        # API呼び出し
-        response = requests.post(url, json=request_body)
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        # レスポンスからテキストを抽出
-        if 'responses' in result and len(result['responses']) > 0:
-            response_data = result['responses'][0]
-            
-            # エラーチェック
-            if 'error' in response_data:
-                error_msg = response_data['error'].get('message', 'Unknown error')
-                raise Exception(f"Vision APIエラー: {error_msg}")
-            
-            if 'fullTextAnnotation' in response_data:
-                return response_data['fullTextAnnotation'].get('text', '')
-        
-        return ''
-        
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"APIリクエストエラー: {e}")
-    except Exception as e:
-        raise Exception(f"OCR処理エラー: {e}")
-
-# PDFからテキストを抽出する関数（OCR対応、キャッシュ機能付き）
-def extract_text_from_pdf(pdf_file):
-    """
-    PDFファイルからテキストを抽出する。
-    テキストが抽出できない（少ない）場合は、OCR（Google Cloud Vision）を試みる。
-    同じPDFファイルの場合は、キャッシュから結果を返す。
-    """
-    # PDFファイルのハッシュを計算（キャッシュキーとして使用）
-    pdf_bytes = pdf_file.read()
-    pdf_file.seek(0)  # ファイルポインタをリセット
-    
-    # ファイル名と内容のハッシュを組み合わせてキーを生成
-    file_hash = hashlib.md5(pdf_bytes).hexdigest()
-    file_name = pdf_file.name if hasattr(pdf_file, 'name') else 'unknown'
-    cache_key = f"{file_name}_{file_hash}"
-    
-    # キャッシュの初期化
-    if 'pdf_cache' not in st.session_state:
-        st.session_state.pdf_cache = {}
-    
-    # キャッシュに結果がある場合はそれを返す
-    if cache_key in st.session_state.pdf_cache:
-        # st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
-        return st.session_state.pdf_cache[cache_key]
-    
-    # 1. PyMuPDFでテキスト抽出を試みる
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        full_text = ""
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            full_text += page.get_text("text")
-        
-        doc.close()
-        
-        # テキストが実際に抽出できたか判定（空白や改行のみでないかチェック）
-        # 意味のある文字（空白・改行・タブ以外）が含まれているか確認
-        text_without_whitespace = ''.join(full_text.split())
-        if len(text_without_whitespace) > 0:
-            # テキスト情報が含まれている場合は、OCR処理をスキップしてテキストを返す
-            st.success("PDFからテキスト情報を取得しました。OCR処理はスキップします。")
-            # キャッシュに保存
-            st.session_state.pdf_cache[cache_key] = full_text
-            return full_text
-        
-        # テキストが抽出できない（空白のみ）場合はOCR処理に移行
-        st.info("PDFにテキスト情報が含まれていません。OCR処理を実行します...")
-        
-    except Exception as e:
-        st.warning(f"PyMuPDFでのテキスト抽出エラー: {e}。OCR処理に移行します。")
-
-    # 2. OCR処理 (テキスト抽出失敗時またはテキストが少ない場合)
-    if not google_vision_api_key:
-        st.error("OCR機能を使用するには、`.env`ファイルに`GOOGLE_VISION_API_KEY`を設定してください。")
-        return None
-    
-    full_text_ocr = ""
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        total_pages = len(doc)
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for page_num in range(total_pages):
-            page = doc.load_page(page_num)
-            
-            # ページを画像(PNG)に変換
-            pix = page.get_pixmap(dpi=300)
-            img_bytes = pix.tobytes("png")
-            
-            # APIキーを使用してOCR実行
-            page_text = ocr_with_api_key(img_bytes, google_vision_api_key)
-            if page_text:
-                full_text_ocr += page_text + "\n\n"
-            
-            # プログレスバーを更新
-            progress = (page_num + 1) / total_pages
-            progress_bar.progress(progress)
-            status_text.text(f"OCR処理中: ページ {page_num + 1}/{total_pages}")
-        
-        doc.close()
-        progress_bar.empty()
-        status_text.empty()
-        
-        # キャッシュに保存
-        st.session_state.pdf_cache[cache_key] = full_text_ocr
-        st.success("Google Cloud VisionによるOCR処理に成功しました。")
-        return full_text_ocr
-
-    except Exception as e:
-        st.error(f"OCR処理中にエラーが発生しました: {e}")
-        if 'doc' in locals():
-            doc.close()
-        return None
-
-# チャンクをベクトル化してSupabaseに登録する関数
-def process_and_upload_to_supabase(chunks, file_metadata=None):
-    """
-    分割実行で生成されたチャンクをベクトル化し、Supabaseに登録する。
-    
-    Args:
-        chunks: 登録するチャンクのリスト
-        file_metadata: ファイルのメタデータ（辞書形式）
-    """
-    if supabase_client is None:
-        st.error("Supabaseクライアントが初期化されていません。`.env`ファイルに`SUPABASE_URL`と`SUPABASE_KEY`を設定してください。")
-        return False
-    
-    if not chunks or len(chunks) == 0:
-        st.error("チャンクが空です。先に「分割実行」ボタンを押してチャンクを生成してください。")
-        return False
-    
-    try:
-        # 1. ベクトル化（Embedding）
-        with st.spinner("チャンクをベクトル化中..."):
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            embeddings = model.encode(chunks)
-            st.info(f"ベクトル化完了。チャンク数: {len(chunks)}, ベクトル形状: {embeddings.shape}")
-        
-        # 2. Supabaseに登録
-        with st.spinner("Supabaseへのデータ登録中..."):
-            data_to_upload = []
-            default_metadata = file_metadata if file_metadata else {"source_file": "unknown"}
-            
-            for i, chunk in enumerate(chunks):
-                data_to_upload.append({
-                    "content": chunk,
-                    "embedding": embeddings[i].tolist(),  # ベクトルをリスト形式に変換
-                    "metadata": default_metadata
-                })
-            
-            # upsertでデータを挿入（バッチ処理）
-            response = supabase_client.table("documents").upsert(data_to_upload).execute()
-            
-            # レスポンスの確認
-            if hasattr(response, 'data') and response.data:
-                st.success(f"Supabaseへの登録が完了しました。（{len(response.data)}件）")
-                return True
-            else:
-                st.error("Supabaseへの登録に失敗しました。レスポンスにデータが含まれていません。")
-                return False
-                
-    except Exception as e:
-        st.error(f"Supabaseへの登録中にエラーが発生しました: {e}")
-        return False
 
 # --- App Title and Description ---
 st.set_page_config(page_title="RAGステップ・バイ・ステップ学習", layout="wide")
@@ -271,85 +40,20 @@ else:
 st.header("ステップA: チャンキング（テキストの分割）")
 st.write("最初のステップは、元の大きなテキストを、AIが扱いやすい小さな「チャンク」に分割することです。")
 
-# テキストソースの選択（PDFまたはサンプルテキスト）
-text_source_option = st.radio(
-    "テキストソースを選択:",
-    options=["サンプルテキスト", "PDFファイル"],
-    horizontal=True,
-    key="text_source_radio"
+# Sample Texts
+sample_texts = {
+    DISPLAY_NAME_A: sample_text_A,
+    DISPLAY_NAME_B: sample_text_B
+}
+
+selected_sample = st.selectbox(
+    "1. 学習用の原文を選択してください:",
+    options=list(sample_texts.keys())
 )
+source_text = sample_texts[selected_sample]
 
-source_text = None
-text_source_type = None
-uploaded_file = None
-selected_sample = None
-
-if text_source_option == "PDFファイル":
-    # PDFアップロード機能
-    uploaded_file = st.file_uploader(
-        "PDFファイルをアップロード:",
-        type=['pdf'],
-        help="PDFファイルをアップロードすると、そのテキストがチャンキングのソースとして使用されます。"
-    )
-    
-    if uploaded_file is not None:
-        # PDFファイルのハッシュを計算してキャッシュをチェック
-        pdf_bytes = uploaded_file.read()
-        uploaded_file.seek(0)  # ファイルポインタをリセット
-        file_hash = hashlib.md5(pdf_bytes).hexdigest()
-        file_name = uploaded_file.name if hasattr(uploaded_file, 'name') else 'unknown'
-        cache_key = f"{file_name}_{file_hash}"
-        
-        # ファイル情報をsession_stateに保存
-        st.session_state.current_file_name = file_name
-        
-        # キャッシュの初期化
-        if 'pdf_cache' not in st.session_state:
-            st.session_state.pdf_cache = {}
-        
-        # キャッシュに結果がある場合はそれを使用、ない場合は抽出を実行
-        if cache_key in st.session_state.pdf_cache:
-            source_text = st.session_state.pdf_cache[cache_key]
-            text_source_type = "PDF"
-            st.session_state.text_source_type = "PDF"
-            # st.info(f"キャッシュからPDF「{file_name}」のテキストを取得しました。")
-        else:
-            # PDFからテキストを抽出
-            with st.spinner("PDFからテキストを抽出中..."):
-                extracted_text = extract_text_from_pdf(uploaded_file)
-                if extracted_text:
-                    source_text = extracted_text
-                    text_source_type = "PDF"
-                    st.session_state.text_source_type = "PDF"
-                    st.success(f"PDFファイル「{file_name}」からテキストを抽出しました。")
-                else:
-                    st.error("PDFからテキストを抽出できませんでした。")
-                    source_text = None
-    else:
-        st.info("PDFファイルをアップロードしてください。")
-        # session_stateからクリア
-        if 'current_file_name' in st.session_state:
-            del st.session_state.current_file_name
-else:
-    # サンプルテキストを選択
-    sample_texts = {
-        DISPLAY_NAME_A: sample_text_A,
-        DISPLAY_NAME_B: sample_text_B
-    }
-    
-    selected_sample = st.selectbox(
-        "1. 学習用の原文を選択してください:",
-        options=list(sample_texts.keys())
-    )
-    source_text = sample_texts[selected_sample]
-    text_source_type = "サンプルテキスト"
-    st.session_state.text_source_type = "サンプルテキスト"
-    # 選択したサンプルをsession_stateに保存
-    st.session_state.current_sample_name = selected_sample
-
-if source_text:
-    with st.expander(f"選択した原文を表示（{text_source_type}）"):
-        st.text(source_text)
+with st.expander("選択した原文を表示"):
+    st.text(source_text)
 
 split_method = st.radio(
     "2. 分割方法を選択してください:",
@@ -363,18 +67,12 @@ if split_method == "固定文字数":
 
 chunks = []
 if st.button("分割実行", key="chunking_button"):
-    if source_text is None:
-        st.error("テキストが選択されていません。サンプルテキストを選択するか、PDFファイルをアップロードしてください。")
-    else:
-        # 分割方法をsession_stateに保存
-        st.session_state.split_method = split_method
-        if split_method == "固定文字数":
-            chunks = [source_text[i:i+chunk_size] for i in range(0, len(source_text), chunk_size)]
-            st.session_state.chunk_size = chunk_size
-        elif split_method == "改行（\\n）":
-            chunks = [p for p in source_text.split('\n') if p.strip()]
-        elif split_method == "句読点（。）":
-            chunks = [p + "。" for p in source_text.split('。') if p.strip()]
+    if split_method == "固定文字数":
+        chunks = [source_text[i:i+chunk_size] for i in range(0, len(source_text), chunk_size)]
+    elif split_method == "改行（\\n）":
+        chunks = [p for p in source_text.split('\n') if p.strip()]
+    elif split_method == "句読点（。）":
+        chunks = [p + "。" for p in source_text.split('。') if p.strip()]
 
 if 'chunks' not in st.session_state:
     st.session_state.chunks = []
@@ -390,81 +88,6 @@ if st.session_state.chunks:
         with st.container(border=True):
             st.write(f"**チャンク {i+1}**")
             st.text(chunk)
-    
-    # Supabaseへの登録機能
-    if supabase_client:
-        st.write("---")
-        st.subheader("Supabaseへの登録")
-        st.write("「分割実行」で生成されたチャンクをベクトル化してSupabaseに登録できます。")
-        
-        # メタデータを準備
-        current_text_source_type = st.session_state.get('text_source_type', 'unknown')
-        current_split_method = st.session_state.get('split_method', 'unknown')
-        if current_text_source_type == "PDF":
-            # PDFファイルの場合
-            file_name = st.session_state.get('current_file_name', 'unknown')
-            metadata = {
-                "source_file": file_name,
-                "type": "pdf",
-                "chunking_method": current_split_method
-            }
-            # 固定文字数の場合はチャンクサイズも保存
-            if current_split_method == "固定文字数":
-                metadata["chunk_size"] = st.session_state.get('chunk_size', 150)
-        else:
-            # サンプルテキストの場合
-            sample_name = st.session_state.get('current_sample_name', 'sample_text')
-            metadata = {
-                "source_file": sample_name,
-                "type": "sample_text",
-                "chunking_method": current_split_method
-            }
-            # 固定文字数の場合はチャンクサイズも保存
-            if current_split_method == "固定文字数":
-                metadata["chunk_size"] = st.session_state.get('chunk_size', 150)
-        
-        if st.button("Supabaseに登録", key="upload_to_supabase"):
-            process_and_upload_to_supabase(st.session_state.chunks, file_metadata=metadata)
-
-# Supabaseでベクトル検索を実行する関数
-def search_documents_supabase(query_text, threshold=0.5, count=5):
-    """
-    テキストクエリをベクトル化し、Supabaseでベクトル検索を実行する
-    
-    Args:
-        query_text: 検索クエリのテキスト
-        threshold: 類似度の閾値（デフォルト: 0.5）
-        count: 返す検索結果の数（デフォルト: 5）
-    
-    Returns:
-        検索結果のリスト（chunk, scoreのタプルのリスト）
-    """
-    if supabase_client is None:
-        st.error("Supabaseクライアントが初期化されていません。`.env`ファイルに`SUPABASE_URL`と`SUPABASE_KEY`を設定してください。")
-        return None
-    
-    try:
-        # 1. 質問をベクトル化
-        model = SentenceTransformer('all-MiniLM-L6-v2')
-        query_embedding = model.encode([query_text])[0].tolist()
-        
-        # 2. SupabaseのRPC (Remote Procedure Call) でSQL関数を呼び出す
-        response = supabase_client.rpc('match_documents', {
-            'query_embedding': query_embedding,
-            'match_threshold': threshold,
-            'match_count': count
-        }).execute()
-        
-        if response.data:
-            # (chunk, score)のタプルのリストに変換
-            scored_chunks = [(doc['content'], doc['similarity']) for doc in response.data]
-            return scored_chunks
-        else:
-            return []
-            
-    except Exception as e:
-        st.error(f"Supabaseでの検索エラー: {e}")
-        return None
 
 # --- Step B: Retrieval ---
 st.header("ステップB: 検索（Retrieval）")
@@ -473,21 +96,7 @@ st.write("次に、ユーザーの質問と意味が近いチャンクを、大�
 if st.session_state.chunks:
     question = st.text_input("3. サンプルテキストに関する質問を入力してください:", placeholder="例：主人公の名前は？")
 
-    # 検索ボタンを2つ配置
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # ローカル検索（既存機能）
-        local_search_clicked = st.button("検索実行（ローカル）", key="retrieval_button_local", use_container_width=True)
-        
-    with col2:
-        # Supabase検索（新機能）
-        supabase_search_clicked = st.button("検索実行（Supabase）", key="retrieval_button_supabase", use_container_width=True, disabled=supabase_client is None)
-        if supabase_client is None:
-            st.caption("⚠️ Supabaseが設定されていません")
-
-    # ローカル検索の実行
-    if local_search_clicked and question:
+    if st.button("検索実行", key="retrieval_button") and question:
         with st.spinner("Embeddingモデルを読み込み、ベクトル化と類似度計算を実行中です..."):
             try:
                 # 1. Load model
@@ -507,65 +116,14 @@ if st.session_state.chunks:
                 
                 st.session_state.scored_chunks = scored_chunks
                 st.session_state.question = question
-                st.session_state.search_method = "local"
+
 
             except Exception as e:
                 st.error(f"検索実行中にエラーが発生しました: {e}")
 
-    # Supabase検索の実行
-    if supabase_search_clicked and question:
-        with st.spinner("Supabaseでベクトル検索を実行中です..."):
-            try:
-                # 検索パラメータの設定
-                threshold = st.session_state.get('supabase_search_threshold', 0.5)
-                count = st.session_state.get('supabase_search_count', 5)
-                
-                scored_chunks = search_documents_supabase(question, threshold=threshold, count=count)
-                
-                if scored_chunks is not None:
-                    st.session_state.scored_chunks = scored_chunks
-                    st.session_state.question = question
-                    st.session_state.search_method = "supabase"
-                    
-                    if len(scored_chunks) == 0:
-                        st.warning(f"類似度 {threshold} 以上で関連するチャンクは見つかりませんでした。")
-                    else:
-                        st.info(f"類似度 {threshold} 以上で {len(scored_chunks)} 件の関連チャンクが見つかりました。")
-
-            except Exception as e:
-                st.error(f"Supabase検索実行中にエラーが発生しました: {e}")
-
-    # Supabase検索のパラメータ設定
-    if supabase_client:
-        st.write("---")
-        with st.expander("Supabase検索の設定", expanded=False):
-            st.caption("Supabaseに登録されたデータから検索します。先にSupabaseにデータを登録してください。")
-            threshold = st.slider(
-                "類似度の閾値:",
-                min_value=0.0,
-                max_value=1.0,
-                value=st.session_state.get('supabase_search_threshold', 0.5),
-                step=0.05,
-                help="この値以上の類似度を持つチャンクのみが検索結果に含まれます。"
-            )
-            st.session_state.supabase_search_threshold = threshold
-            
-            count = st.slider(
-                "検索結果の最大件数:",
-                min_value=1,
-                max_value=20,
-                value=st.session_state.get('supabase_search_count', 5),
-                step=1
-            )
-            st.session_state.supabase_search_count = count
-
-    # 検索結果の表示
-    if 'scored_chunks' in st.session_state and 'question' in st.session_state:
-        search_method = st.session_state.get('search_method', 'local')
-        method_name = "ローカル" if search_method == "local" else "Supabase"
-        
-        st.subheader(f"4. 検索結果（{method_name}検索、関連度スコア順）")
-        st.write(f"質問と各チャンクの意味的な近さを「関連度スコア」として計算し、スコアの高い順に並べ替えました。（検索方法: {method_name}）")
+    if 'scored_chunks' in st.session_state:
+        st.subheader("4. 検索結果（関連度スコア順）")
+        st.write("質問と各チャンクの意味的な近さを「関連度スコア」として計算し、スコアの高い順に並べ替えました。")
         for i, (chunk, score) in enumerate(st.session_state.scored_chunks):
             with st.container(border=True):
                 col1, col2 = st.columns([4, 1])
@@ -674,4 +232,3 @@ elif not openai_api_key:
     st.warning("ステップCに進むには、`.env`ファイルに`OPENAI_API_KEY`を設定してください。")
 else:
     st.info("ステップBで検索を実行してください。")
-

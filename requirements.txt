@@ -4,5 +4,5 @@ python-dotenv
 sentence-transformers
 numpy
 PyMuPDF
-google-cloud-vision
+requests
 supabase

@@ -36,6 +36,9 @@ if openai_api_key:
 else:
     st.sidebar.error("`.env`ファイルに`OPENAI_API_KEY`を設定してください。")
 
+# gpt modelの設定
+model_name = "gpt-4.1-nano"
+
 # --- Step A: Chunking ---
 st.header("ステップA: チャンキング（テキストの分割）")
 st.write("最初のステップは、元の大きなテキストを、AIが扱いやすい小さな「チャンク」に分割することです。")
@@ -189,7 +192,7 @@ if 'scored_chunks' in st.session_state and openai_api_key:
                 # RAGあり
                 client_rag = openai.OpenAI()
                 response_rag = client_rag.chat.completions.create(
-                    model="gpt-5-nano",
+                    model=model_name,
                     messages=[
                         {"role": "system", "content": "You are a helpful assistant."},
                         {"role": "user", "content": final_prompt}
@@ -204,7 +207,7 @@ if 'scored_chunks' in st.session_state and openai_api_key:
                 client_no_rag = openai.OpenAI()
                 no_rag_prompt = st.session_state.get('question', '')
                 response_no_rag = client_no_rag.chat.completions.create(
-                    model="gpt-5-nano",
+                    model=model_name,
                     messages=[
                         {"role": "system", "content": "You are a helpful assistant."},
                         {"role": "user", "content": no_rag_prompt}

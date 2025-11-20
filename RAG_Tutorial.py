@@ -2,6 +2,7 @@ import streamlit as st
 import openai
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from sentence_transformers.util import cos_sim
 import os
 from dotenv import load_dotenv
 
@@ -41,7 +42,7 @@ st.sidebar.write("---")
 model_name = st.sidebar.selectbox(
     "GPTモデルを選択:",
     options=["gpt-4o-mini", "gpt-4.1-nano", "gpt-5-nano"],
-    index=1,  # デフォルトはgpt-4.1-nano
+    index=0,  # デフォルトはgpt-4o-mini
     help="回答生成に使用するGPTモデルを選択してください。"
 )
 
@@ -70,7 +71,7 @@ split_method = st.radio(
     horizontal=True
 )
 
-chunk_size = 50
+chunk_size = 50 # デフォルトのチャンクサイズ(使用されることは無いが、デフォルト値を設定するために必要)
 if split_method == "固定文字数":
     chunk_size = st.slider("チャンクサイズ（文字数）:", min_value=50, max_value=500, value=150, step=10)
 
@@ -118,8 +119,7 @@ if st.session_state.chunks:
                 question_embedding = model.encode([question])
 
                 # 4. Calculate cosine similarity
-                similarities = np.dot(chunk_embeddings, question_embedding.T) / (np.linalg.norm(chunk_embeddings, axis=1, keepdims=True) * np.linalg.norm(question_embedding, keepdims=True))
-                
+                similarities = cos_sim(question_embedding, chunk_embeddings)
                 # Create a list of tuples (chunk, score) and sort it
                 scored_chunks = sorted(zip(st.session_state.chunks, similarities.flatten()), key=lambda x: x[1], reverse=True)
                 

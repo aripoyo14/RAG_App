@@ -2,6 +2,7 @@ import streamlit as st
 import openai
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from sentence_transformers.util import cos_sim
 import os
 from dotenv import load_dotenv
 
@@ -36,14 +37,10 @@ if openai_api_key:
 else:
     st.sidebar.error("`.env`ファイルに`OPENAI_API_KEY`を設定してください。")
 
-# GPTモデルの選択
-st.sidebar.write("---")
-model_name = st.sidebar.selectbox(
-    "GPTモデルを選択:",
-    options=["gpt-4o-mini", "gpt-4.1-nano", "gpt-5-nano"],
-    index=1,  # デフォルトはgpt-4.1-nano
-    help="回答生成に使用するGPTモデルを選択してください。"
-)
+# --------------------------------------------------------------------------------------
+# Q1. GPTモデルを選択できるようにしてください。模範解答はサイドバーに追加していますが、選択できればどこでもOKです。
+# --------------------------------------------------------------------------------------
+# 回答記入箇所
 
 # --- Step A: Chunking ---
 st.header("ステップA: チャンキング（テキストの分割）")
@@ -61,14 +58,15 @@ selected_sample = st.selectbox(
 )
 source_text = sample_texts[selected_sample]
 
-with st.expander("選択した原文を表示"):
-    st.text(source_text)
+# --------------------------------------------------------------------------------------
+# Q2. 選択した原文を表示するコードを追加してください。
+# --------------------------------------------------------------------------------------
+# 回答記入箇所
 
-split_method = st.radio(
-    "2. 分割方法を選択してください:",
-    options=["固定文字数", "改行（\\n）", "句読点（。）"],
-    horizontal=True
-)
+# --------------------------------------------------------------------------------------
+# Q3. 分割方法を選択できるようにしてください。
+# --------------------------------------------------------------------------------------
+# 回答記入箇所
 
 chunk_size = 50
 if split_method == "固定文字数":
@@ -108,17 +106,20 @@ if st.session_state.chunks:
     if st.button("検索実行", key="retrieval_button") and question:
         with st.spinner("Embeddingモデルを読み込み、ベクトル化と類似度計算を実行中です..."):
             try:
+                # --------------------------------------------------------------------------------------
+                # Q４. コサイン類似度を使用して、チャンクと質問の類似度を計算するコードを追加してください。
+                # --------------------------------------------------------------------------------------
                 # 1. Load model
-                model = SentenceTransformer('all-MiniLM-L6-v2')
+                # 回答記入箇所
 
                 # 2. Embed all chunks
-                chunk_embeddings = model.encode(st.session_state.chunks)
+                # 回答記入箇所
 
                 # 3. Embed question
-                question_embedding = model.encode([question])
+                # 回答記入箇所
 
                 # 4. Calculate cosine similarity
-                similarities = np.dot(chunk_embeddings, question_embedding.T) / (np.linalg.norm(chunk_embeddings, axis=1, keepdims=True) * np.linalg.norm(question_embedding, keepdims=True))
+                # 回答記入箇所
                 
                 # Create a list of tuples (chunk, score) and sort it
                 scored_chunks = sorted(zip(st.session_state.chunks, similarities.flatten()), key=lambda x: x[1], reverse=True)
@@ -226,7 +227,10 @@ if 'scored_chunks' in st.session_state and openai_api_key:
 
     # Display answers if they exist in session state
     if 'rag_answer' in st.session_state or 'no_rag_answer' in st.session_state:
-        col1, col2 = st.columns(2)
+        # --------------------------------------------------------------------------------------
+        # Q５. RAGありとRAGなしの回答を横に並べて表示できるようにst.hogehogeを修正してください。
+        # --------------------------------------------------------------------------------------
+        # col1, col2 = st.hogehoge 
         with col1:
             if 'rag_answer' in st.session_state:
                 st.info("**RAGありの回答**\n\n上記最終プロンプトを使用")

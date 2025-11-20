@@ -103,7 +103,7 @@ if st.session_state.chunks:
         with st.spinner("Embeddingモデルを読み込み、ベクトル化と類似度計算を実行中です..."):
             try:
                 # 1. Load model
-                model = SentenceTransformer('all-MiniLM-L6-v2')
+                model = SentenceTransformer('sonoisa/sentence-bert-base-ja-mean-tokens')
 
                 # 2. Embed all chunks
                 chunk_embeddings = model.encode(st.session_state.chunks)

@@ -219,7 +219,7 @@ def process_and_upload_to_supabase(chunks, file_metadata=None):
     try:
         # 1. ベクトル化（Embedding）
         with st.spinner("チャンクをベクトル化中..."):
-            model = SentenceTransformer('all-MiniLM-L6-v2')
+            model = SentenceTransformer('sonoisa/sentence-bert-base-ja-mean-tokens')
             embeddings = model.encode(chunks)
             st.info(f"ベクトル化完了。チャンク数: {len(chunks)}, ベクトル形状: {embeddings.shape}")
         
@@ -448,7 +448,7 @@ def search_documents_supabase(query_text, threshold=0.5, count=5):
     
     try:
         # 1. 質問をベクトル化
-        model = SentenceTransformer('all-MiniLM-L6-v2')
+        model = SentenceTransformer('sonoisa/sentence-bert-base-ja-mean-tokens')
         query_embedding = model.encode([query_text])[0].tolist()
         
         # 2. SupabaseのRPC (Remote Procedure Call) でSQL関数を呼び出す
@@ -494,7 +494,7 @@ if st.session_state.chunks:
         with st.spinner("Embeddingモデルを読み込み、ベクトル化と類似度計算を実行中です..."):
             try:
                 # 1. Load model
-                model = SentenceTransformer('all-MiniLM-L6-v2')
+                model = SentenceTransformer('sonoisa/sentence-bert-base-ja-mean-tokens')
 
                 # 2. Embed all chunks
                 chunk_embeddings = model.encode(st.session_state.chunks)

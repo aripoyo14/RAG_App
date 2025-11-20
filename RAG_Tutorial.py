@@ -36,8 +36,14 @@ if openai_api_key:
 else:
     st.sidebar.error("`.env`ファイルに`OPENAI_API_KEY`を設定してください。")
 
-# gpt modelの設定
-model_name = "gpt-4.1-nano"
+# GPTモデルの選択
+st.sidebar.write("---")
+model_name = st.sidebar.selectbox(
+    "GPTモデルを選択:",
+    options=["gpt-4o-mini", "gpt-4.1-nano", "gpt-5-nano"],
+    index=1,  # デフォルトはgpt-4.1-nano
+    help="回答生成に使用するGPTモデルを選択してください。"
+)
 
 # --- Step A: Chunking ---
 st.header("ステップA: チャンキング（テキストの分割）")
@@ -103,7 +109,7 @@ if st.session_state.chunks:
         with st.spinner("Embeddingモデルを読み込み、ベクトル化と類似度計算を実行中です..."):
             try:
                 # 1. Load model
-                model = SentenceTransformer('all-MiniLM-L6-v2')
+                model = SentenceTransformer('sonoisa/sentence-bert-base-ja-mean-tokens')
 
                 # 2. Embed all chunks
                 chunk_embeddings = model.encode(st.session_state.chunks)

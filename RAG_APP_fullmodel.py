@@ -267,8 +267,14 @@ if openai_api_key:
 else:
     st.sidebar.error("`.env`ファイルに`OPENAI_API_KEY`を設定してください。")
 
-# gpt modelの設定
-model_name = "gpt-4.1-nano"
+# GPTモデルの選択
+st.sidebar.write("---")
+model_name = st.sidebar.selectbox(
+    "GPTモデルを選択:",
+    options=["gpt-4o-mini", "gpt-4.1-nano", "gpt-5-nano"],
+    index=1,  # デフォルトはgpt-4.1-nano
+    help="回答生成に使用するGPTモデルを選択してください。"
+)
 
 # --- Step A: Chunking ---
 st.header("ステップA: チャンキング（テキストの分割）")

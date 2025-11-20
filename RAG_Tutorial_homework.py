@@ -1,11 +1,9 @@
-
 import streamlit as st
 import openai
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import os
 from dotenv import load_dotenv
-import fitz  # PyMuPDF
 
 # --- requirements.txt ---
 # streamlit
@@ -13,7 +11,6 @@ import fitz  # PyMuPDF
 # python-dotenv
 # sentence-transformers
 # numpy
-# PyMuPDF
 # ------------------------
 
 # .envファイルから環境変数を読み込む
@@ -21,23 +18,6 @@ load_dotenv()
 
 # 学習用のサンプルテキストを外部ファイルからインポート
 from sample_texts import sample_text_A, sample_text_B, DISPLAY_NAME_A, DISPLAY_NAME_B
-
-# PDFからテキストを抽出する関数
-def extract_text_from_pdf(pdf_file):
-    """
-    PDFファイルからテキストを抽出する（PyMuPDFを使用）
-    """
-    try:
-        doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-        full_text = ""
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            full_text += page.get_text("text")
-        doc.close()
-        return full_text
-    except Exception as e:
-        st.error(f"PDFのテキスト抽出中にエラーが発生しました: {e}")
-        return None
 
 # --- App Title and Description ---
 st.set_page_config(page_title="RAGステップ・バイ・ステップ学習", layout="wide")
@@ -56,58 +36,33 @@ if openai_api_key:
 else:
     st.sidebar.error("`.env`ファイルに`OPENAI_API_KEY`を設定してください。")
 
+# GPTモデルの選択
+st.sidebar.write("---")
+model_name = st.sidebar.selectbox(
+    "GPTモデルを選択:",
+    options=["gpt-4o-mini", "gpt-4.1-nano", "gpt-5-nano"],
+    index=1,  # デフォルトはgpt-4.1-nano
+    help="回答生成に使用するGPTモデルを選択してください。"
+)
+
 # --- Step A: Chunking ---
 st.header("ステップA: チャンキング（テキストの分割）")
 st.write("最初のステップは、元の大きなテキストを、AIが扱いやすい小さな「チャンク」に分割することです。")
 
-# テキストソースの選択（PDFまたはサンプルテキスト）
-text_source_option = st.radio(
-    "テキストソースを選択:",
-    options=["サンプルテキスト", "PDFファイル"],
-    horizontal=True,
-    key="text_source_radio"
+# Sample Texts
+sample_texts = {
+    DISPLAY_NAME_A: sample_text_A,
+    DISPLAY_NAME_B: sample_text_B
+}
+
+selected_sample = st.selectbox(
+    "1. 学習用の原文を選択してください:",
+    options=list(sample_texts.keys())
 )
+source_text = sample_texts[selected_sample]
 
-source_text = None
-text_source_type = None
-
-if text_source_option == "PDFファイル":
-    # PDFアップロード機能
-    uploaded_file = st.file_uploader(
-        "PDFファイルをアップロード:",
-        type=['pdf'],
-        help="PDFファイルをアップロードすると、そのテキストがチャンキングのソースとして使用されます。"
-    )
-    
-    if uploaded_file is not None:
-        # PDFからテキストを抽出
-        with st.spinner("PDFからテキストを抽出中..."):
-            extracted_text = extract_text_from_pdf(uploaded_file)
-            if extracted_text:
-                source_text = extracted_text
-                text_source_type = "PDF"
-                st.success(f"PDFファイル「{uploaded_file.name}」からテキストを抽出しました。")
-            else:
-                st.error("PDFからテキストを抽出できませんでした。")
-    else:
-        st.info("PDFファイルをアップロードしてください。")
-else:
-    # サンプルテキストを選択
-    sample_texts = {
-        DISPLAY_NAME_A: sample_text_A,
-        DISPLAY_NAME_B: sample_text_B
-    }
-    
-    selected_sample = st.selectbox(
-        "1. 学習用の原文を選択してください:",
-        options=list(sample_texts.keys())
-    )
-    source_text = sample_texts[selected_sample]
-    text_source_type = "サンプルテキスト"
-
-if source_text:
-    with st.expander(f"選択した原文を表示（{text_source_type}）"):
-        st.text(source_text)
+with st.expander("選択した原文を表示"):
+    st.text(source_text)
 
 split_method = st.radio(
     "2. 分割方法を選択してください:",
@@ -121,15 +76,12 @@ if split_method == "固定文字数":
 
 chunks = []
 if st.button("分割実行", key="chunking_button"):
-    if source_text is None:
-        st.error("テキストが選択されていません。サンプルテキストを選択するか、PDFファイルをアップロードしてください。")
-    else:
-        if split_method == "固定文字数":
-            chunks = [source_text[i:i+chunk_size] for i in range(0, len(source_text), chunk_size)]
-        elif split_method == "改行（\\n）":
-            chunks = [p for p in source_text.split('\n') if p.strip()]
-        elif split_method == "句読点（。）":
-            chunks = [p + "。" for p in source_text.split('。') if p.strip()]
+    if split_method == "固定文字数":
+        chunks = [source_text[i:i+chunk_size] for i in range(0, len(source_text), chunk_size)]
+    elif split_method == "改行（\\n）":
+        chunks = [p for p in source_text.split('\n') if p.strip()]
+    elif split_method == "句読点（。）":
+        chunks = [p + "。" for p in source_text.split('。') if p.strip()]
 
 if 'chunks' not in st.session_state:
     st.session_state.chunks = []
@@ -246,7 +198,7 @@ if 'scored_chunks' in st.session_state and openai_api_key:
                 # RAGあり
                 client_rag = openai.OpenAI()
                 response_rag = client_rag.chat.completions.create(
-                    model="gpt-5-nano",
+                    model=model_name,
                     messages=[
                         {"role": "system", "content": "You are a helpful assistant."},
                         {"role": "user", "content": final_prompt}
@@ -261,7 +213,7 @@ if 'scored_chunks' in st.session_state and openai_api_key:
                 client_no_rag = openai.OpenAI()
                 no_rag_prompt = st.session_state.get('question', '')
                 response_no_rag = client_no_rag.chat.completions.create(
-                    model="gpt-5-nano",
+                    model=model_name,
                     messages=[
                         {"role": "system", "content": "You are a helpful assistant."},
                         {"role": "user", "content": no_rag_prompt}
@@ -289,4 +241,3 @@ elif not openai_api_key:
     st.warning("ステップCに進むには、`.env`ファイルに`OPENAI_API_KEY`を設定してください。")
 else:
     st.info("ステップBで検索を実行してください。")
-
